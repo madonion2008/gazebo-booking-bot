@@ -1,9 +1,8 @@
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types import InputFile
-from ics import Calendar, Event
 from config import BOT_TOKEN, ADMIN_USERNAME
 
 # Логування
@@ -68,6 +67,7 @@ async def handler_save(message: types.Message):
     parts = message.text.split(' ', 3)
     date_str, start_str, end_str = parts[0], parts[1], parts[2]
     comment = parts[3] if len(parts) > 3 else ''
+    # Перевірка формату
     try:
         datetime.strptime(date_str, '%Y-%m-%d')
         datetime.strptime(start_str, '%H:%M')
@@ -88,22 +88,35 @@ async def handler_save(message: types.Message):
         return
 
     username = message.from_user.username or str(message.from_user.id)
-    c.execute("INSERT INTO bookings(username, date, start_time, end_time, comment) VALUES(?,?,?,?,?)",
-              (username, date_str, start_str, end_str, comment))
+    c.execute(
+        "INSERT INTO bookings(username, date, start_time, end_time, comment) VALUES(?,?,?,?,?)",
+        (username, date_str, start_str, end_str, comment)
+    )
     conn.commit()
     bid = c.lastrowid
 
-    # Генерація .ics
-    cal = Calendar()
-    ev = Event()
-    ev.name = "Бронювання альтанки"
-    ev.begin = f"{date_str}T{start_str}:00"
-    ev.end = f"{date_str}T{end_str}:00"
-    ev.description = f"@{username}\n{comment}"
-    cal.events.add(ev)
+    # Ручна генерація .ics-файлу
     ics_file = f"booking_{bid}.ics"
-    with open(ics_file, 'w', encoding='utf-8') as f:
-        f.writelines(cal)
+    dtstamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dtstart = f"{date_str.replace('-', '')}T{start_str.replace(':', '')}00Z"
+    dtend   = f"{date_str.replace('-', '')}T{end_str.replace(':', '')}00Z"
+    ics_text = "\r\n".join([
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//CityLake//GazeboBookingBot//EN",
+        "BEGIN:VEVENT",
+        f"UID:{bid}@citylake",
+        f"DTSTAMP:{dtstamp}",
+        f"DTSTART:{dtstart}",
+        f"DTEND:{dtend}",
+        "SUMMARY:Бронювання альтанки",
+        f"DESCRIPTION:Користувач: @{username}\\n{comment}",
+        "END:VEVENT",
+        "END:VCALENDAR",
+        ""
+    ])
+    with open(ics_file, 'w', encoding='utf-8', newline='') as f:
+        f.write(ics_text)
 
     await message.reply(f"✅ Ваше бронювання #{bid} збережено!")
     await message.reply_document(InputFile(ics_file))
@@ -111,7 +124,8 @@ async def handler_save(message: types.Message):
 @dp.message_handler(commands=['admin'])
 async def cmd_admin(message: types.Message):
     if message.from_user.username != ADMIN_USERNAME:
-        return await message.reply("🚫 Доступ заборонено.")
+        await message.reply("🚫 Доступ заборонено.")
+        return
     await message.reply(
         "Адмін-команди:\n"
         "/schedule — переглянути всі бронювання\n"
@@ -121,11 +135,13 @@ async def cmd_admin(message: types.Message):
 @dp.message_handler(lambda m: m.text and m.text.startswith('/delete '))
 async def cmd_delete(message: types.Message):
     if message.from_user.username != ADMIN_USERNAME:
-        return await message.reply("🚫 Доступ заборонено.")
+        await message.reply("🚫 Доступ заборонено.")
+        return
     try:
         bid = int(message.text.split()[1])
-    except:
-        return await message.reply("❌ Використання: /delete <id>")
+    except (IndexError, ValueError):
+        await message.reply("❌ Використання: /delete <id>")
+        return
     c.execute("DELETE FROM bookings WHERE id=?", (bid,))
     if c.rowcount == 0:
         await message.reply(f"❌ Бронювання #{bid} не знайдено.")
