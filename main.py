@@ -77,8 +77,7 @@ async def cmd_schedule(message: types.Message):
     )
     rows = c.fetchall()
     if not rows:
-        await message.reply("Наразі немає жодного бронювання.")
-        return
+        return await message.reply("Наразі немає жодного бронювання.")
     lines = ["Графік бронювань:"]
     for bid, date, st, et, user, comment in rows:
         line = f"[{bid}] {date} {st}–{et} від @{user}"
@@ -118,13 +117,57 @@ async def handler_save(message: types.Message):
     conn.commit()
     bid = c.lastrowid
 
-    # Ручне .ics
+    # Ручна генерація .ics-файлу
     ics_file = f"booking_{bid}.ics"
     dtstamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dtstart = f"{date_str.replace('-', '')}T{start_str.replace(':','')}00Z"
     dtend   = f"{date_str.replace('-', '')}T{end_str.replace(':','')}00Z"
-    ics_text = "\r\n".join([
+    ics_lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
         "PRODID:-//CityLake//GazeboBookingBot//EN",
         "BEGIN:VEVENT",
+        f"UID:{bid}@citylake",
+        f"DTSTAMP:{dtstamp}",
+        f"DTSTART:{dtstart}",
+        f"DTEND:{dtend}",
+        "SUMMARY:Бронювання альтанки",
+        f"DESCRIPTION:Користувач: @{username}\\n{comment}",
+        "END:VEVENT",
+        "END:VCALENDAR",
+        ""
+    ]
+    ics_text = "\r\n".join(ics_lines)
+    with open(ics_file, "w", encoding="utf-8", newline="") as f:
+        f.write(ics_text)
+
+    await message.reply(f"✅ Бронювання #{bid} збережено!")
+    await message.reply_document(InputFile(ics_file))
+
+@dp.message_handler(commands=["admin"])
+async def cmd_admin(message: types.Message):
+    if message.from_user.username != ADMIN_USERNAME:
+        return await message.reply("🚫 Доступ заборонено.")
+    await message.reply(
+        "Адмін-команди:\n"
+        "/schedule — переглянути всі бронювання\n"
+        "/delete <id> — видалити бронювання"
+    )
+
+@dp.message_handler(lambda m: m.text and m.text.startswith("/delete "))
+async def cmd_delete(message: types.Message):
+    if message.from_user.username != ADMIN_USERNAME:
+        return await message.reply("🚫 Доступ заборонено.")
+    try:
+        bid = int(message.text.split()[1])
+    except (IndexError, ValueError):
+        return await message.reply("❌ Використання: /delete <id>")
+    c.execute("DELETE FROM bookings WHERE id=?", (bid,))
+    if c.rowcount == 0:
+        await message.reply(f"❌ Бронювання #{bid} не знайдено.")
+    else:
+        conn.commit()
+        await message.reply(f"✅ Бронювання #{bid} видалено.")
+
+if __name__ == "__main__":
+    executor.start_polling(dp, skip_updates=True)
